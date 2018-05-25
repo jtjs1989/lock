@@ -167,6 +167,9 @@ public class RedisDistributionLock implements Lock {
 				} else if(times > 20){ // 循环次数 > 20 次时   去redis取出这个key值 ，判断key值放进去的时间戳以及是否有设置超时时间
 					
 					String redisVal = redisTemplate.opsForValue().get(lockKey);
+					if (redisVal == null) {
+						continue;
+					}
 					long current = System.currentTimeMillis();
 					long endTime = NumberUtils.toLong(redisVal);
 					if (current > endTime) {
