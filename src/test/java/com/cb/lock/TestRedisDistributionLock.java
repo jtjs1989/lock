@@ -1,5 +1,6 @@
 package com.cb.lock;
 
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.locks.Lock;
 
 import org.junit.Test;
@@ -26,6 +27,7 @@ public class TestRedisDistributionLock extends AbstractJUnit4SpringContextTests{
 	}
 	@Test
 	public void testMultiThreadLock() {
+		CountDownLatch count = new CountDownLatch(10);
 		for (int i = 0; i < 10; i++) {
 			new Thread(new Runnable() {
 				@Override
@@ -41,14 +43,16 @@ public class TestRedisDistributionLock extends AbstractJUnit4SpringContextTests{
 							e.printStackTrace();
 						}
 					} finally {
+						count.countDown();
 						lock.unlock();
 					}
 				}
 			}).start();
 		}
 		try {
-			Thread.sleep(1000 * 1000);
+			count.await();
 		} catch (InterruptedException e) {
+			// TODO Auto-generated catch block
 			e.printStackTrace();
 		}
 	}
