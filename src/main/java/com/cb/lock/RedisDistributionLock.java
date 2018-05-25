@@ -5,8 +5,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.Lock;
 
-import org.apache.commons.lang3.RandomStringUtils;
-import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.math.NumberUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -32,18 +30,32 @@ public class RedisDistributionLock implements Lock {
 	private static final Logger log = LoggerFactory.getLogger(RedisDistributionLock.class);
 	
 	public static final String KeyPref = "lock_";
-	private static final int defaultExpTime = 10 * 1000; //默认缓存时间 5秒
-//	private static final int MaxExpire = 30 * 60 * 1000; // 当系统发现某个key的超时时间大于30分钟秒  会删除
+	private static final int defaultExpTime = 10 * 1000; //默认缓存时间 10秒
 	private StringRedisTemplate redisTemplate;
 	private String lockKey;
 	private String value;
 	private boolean isLock;
-	private int expire;  //超时时间  单位为毫秒
-	private long lockTimestamp; //开始加锁的时间戳
-	private long lockedTimestamp; //获得锁的时间戳
-	//默认 的thread sleep time
+	/**
+	 * lockKey过期时间
+	 */
+	private int expire;
+	/**
+	 * 开始获取锁的时间戳
+	 */
+	private long lockTimestamp;
+	/**
+	 * 成功获取锁的时间戳
+	 */
+	private long lockedTimestamp; 
+	
 	private static final int defaultThreadSleepTime = 5;
+	/**
+	 * 获取锁失败 线程 sleep 时间
+	 */
 	private long threadSleepTime;
+	/**
+	 * 释放锁时删除锁的Lua脚本
+	 */
 	private static final DefaultRedisScript<Boolean> redisScript = new DefaultRedisScript<Boolean>(
 			"if redis.call(\"get\",KEYS[1]) == ARGV[1] then \n"+
 			"    redis.call(\"del\",KEYS[1]) \n"+
@@ -62,7 +74,6 @@ public class RedisDistributionLock implements Lock {
 		this.redisTemplate = redisTemplate;
 		this.lockKey = KeyPref + lockKey;
 		this.expire = expire;
-		value = RandomStringUtils.randomNumeric(4);
 		this.threadSleepTime = thradSleepTime;
 	}
 	public RedisDistributionLock(String lockKey, StringRedisTemplate redisTemplate, int expire) {
@@ -105,16 +116,18 @@ public class RedisDistributionLock implements Lock {
 	@Override
 	public boolean tryLock() {
 		try {
-			log.info("tryLock:[{}]", lockKey);
+			if (log.isDebugEnabled()) {
+				log.info("begin tryLock [{}]", lockKey);
+			}
 			lockTimestamp = System.currentTimeMillis();
-			long end = lockTimestamp + expire;
-			value += ":"+end;
-			boolean success = redisTemplate.opsForValue().setIfAbsent(lockKey, value);
+			String end = (lockTimestamp + expire) + "";
+			boolean success = redisTemplate.opsForValue().setIfAbsent(lockKey, end);
 			if (success) {
 				redisTemplate.expire(lockKey, expire, TimeUnit.MILLISECONDS);
 				lockedTimestamp = lockTimestamp;
+				value = end;
 				if (log.isDebugEnabled()) {
-					log.info("locked:{}",lockKey);
+					log.info("tryLock success :{}",lockKey);
 				}
 				isLock = true;
 			}
@@ -139,8 +152,7 @@ public class RedisDistributionLock implements Lock {
 			int times = 0; //循环加锁次数
 			while(lockTimestamp + time > System.currentTimeMillis()){
 				long timestamp = System.currentTimeMillis();
-				long end = timestamp + expire;
-				String redValue = value + ":" + end;
+				String redValue = (timestamp + expire) + "";
 				boolean success = redisTemplate.opsForValue().setIfAbsent(lockKey, redValue);
 				times++;
 				if (success) {
@@ -152,28 +164,12 @@ public class RedisDistributionLock implements Lock {
 						log.info("locked:{}, try_lock_times:{}",lockKey, times);
 					}
 					return true;
-				} else if(times > 50){ // 循环次数 > 10 次时   去redis取出这个key值 ，判断key值放进去的时间戳以及是否有设置超时时间
-					/**
-					 * 需要测试  redis2.8以后支持
-					 * The command returns -2 if the key does not exist.
-					 * The command returns -1 if the key exists but has no associated expire.
-					 * 
-					 * 这个逻辑在高并发测试发现不严谨，多线程中会出现误删（主要原因是因为redis中 set方法和expire方法是分开操作，不是原子的）
-					 */
-//					long redisExpire = redisTemplate.getExpire(lockKey, TimeUnit.MILLISECONDS);
-//					if (redisExpire == -1 || redisExpire > MaxExpire) { // key未设置过期时间或者超时时间设置过长 直接删除
-//						redisTemplate.delete(lockKey);
-//						log.info("Lock [{}] 锁超时时间[{}]过长，被强制删除锁", lockKey, redisExpire);
-//						continue;
-//					} 
-					/**
-					 * 此逻辑经过测试比上面的方法更加严谨，但是需要分布式服务器的系统时间差异不能太大
-					 */
+				} else if(times > 20){ // 循环次数 > 20 次时   去redis取出这个key值 ，判断key值放进去的时间戳以及是否有设置超时时间
+					
 					String redisVal = redisTemplate.opsForValue().get(lockKey);
 					long current = System.currentTimeMillis();
-					long endTime = redisVal.indexOf(":") > 0 ? NumberUtils.toLong(redisVal.split(":")[1]) : NumberUtils.toLong(redisVal);
-					if (StringUtils.isNotEmpty(redisVal) && current > endTime) {
-//						redisTemplate.delete(lockKey);
+					long endTime = NumberUtils.toLong(redisVal);
+					if (current > endTime) {
 						/**
 						 * 通过redis的lua脚本功能去执行删除命令   redis的单线程能保证脚本执行的原子性
 						 */
