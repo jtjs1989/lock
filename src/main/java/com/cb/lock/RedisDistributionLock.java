@@ -5,11 +5,14 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.Lock;
 
-import org.apache.commons.lang3.math.NumberUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.data.redis.connection.RedisConnection;
+import org.springframework.data.redis.connection.RedisStringCommands.SetOption;
+import org.springframework.data.redis.core.RedisConnectionUtils;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
+import org.springframework.data.redis.core.types.Expiration;
 
 /**
  * 基于redis的分布式锁 
@@ -121,9 +124,8 @@ public class RedisDistributionLock implements Lock {
 			}
 			lockTimestamp = System.currentTimeMillis();
 			String end = (lockTimestamp + expire) + "";
-			boolean success = redisTemplate.opsForValue().setIfAbsent(lockKey, end);
+			boolean success = redisSetNx(lockKey, end, expire);
 			if (success) {
-				redisTemplate.expire(lockKey, expire, TimeUnit.MILLISECONDS);
 				lockedTimestamp = lockTimestamp;
 				value = end;
 				if (log.isDebugEnabled()) {
@@ -153,34 +155,16 @@ public class RedisDistributionLock implements Lock {
 			while(lockTimestamp + time > System.currentTimeMillis()){
 				long timestamp = System.currentTimeMillis();
 				String redValue = (timestamp + expire) + "";
-				boolean success = redisTemplate.opsForValue().setIfAbsent(lockKey, redValue);
+				boolean success = redisSetNx(lockKey, redValue, expire);;
 				times++;
 				if (success) {
 					value = redValue;
-					redisTemplate.expire(lockKey, expire, TimeUnit.MILLISECONDS);
 					lockedTimestamp = timestamp;
 					isLock = true;
 					if (log.isDebugEnabled()) {
 						log.info("locked:{}, try_lock_times:{}",lockKey, times);
 					}
 					return true;
-				} else if(times > 20){ // 循环次数 > 20 次时   去redis取出这个key值 ，判断key值放进去的时间戳以及是否有设置超时时间
-					
-					String redisVal = redisTemplate.opsForValue().get(lockKey);
-					if (redisVal == null) {
-						continue;
-					}
-					long current = System.currentTimeMillis();
-					long endTime = NumberUtils.toLong(redisVal);
-					if (current > endTime) {
-						/**
-						 * 通过redis的lua脚本功能去执行删除命令   redis的单线程能保证脚本执行的原子性
-						 */
-						redisTemplate.execute(redisScript, Arrays.asList(lockKey), redisVal);
-						log.info("Lock [{}] 被强制删除锁 redisVal:{}, concurent:{}", lockKey, redisVal, current);
-						continue;
-					}
-					TimeUnit.MICROSECONDS.sleep(threadSleepTime);
 				} else {
 					TimeUnit.MICROSECONDS.sleep(threadSleepTime);
 				}
@@ -205,5 +189,28 @@ public class RedisDistributionLock implements Lock {
 	@Override
 	public Condition newCondition() {
 		return null;
+	}
+	
+	private byte[] seri(String val) {
+		if (val == null) {
+			throw new NullPointerException("");
+		}
+		return redisTemplate.getStringSerializer().serialize(val);
+	}
+	/**
+	 * 包装redis set 方法
+	 * @param key
+	 * @param value
+	 * @param expire 过期时间  单位为毫秒
+	 * @return
+	 */
+	private Boolean redisSetNx(String key, String value, long expire) {
+		RedisConnection connection = RedisConnectionUtils.getConnection(redisTemplate.getConnectionFactory());
+		try {
+			return connection.set(seri(key), seri(value), Expiration.milliseconds(expire), SetOption.SET_IF_ABSENT);
+		} finally {
+			RedisConnectionUtils.releaseConnection(connection, redisTemplate.getConnectionFactory());
+		}
+		
 	}
 }
