@@ -8,33 +8,33 @@ redis实现的分布式锁
 分布式锁与本地事务配合使用时要注意的事项
 考虑如下代码
 @Transactional
-	public void update() {
-		Lock lock = new RedisDistributionLock("test", 10000);
-		lock.lock();
-		try{
-			//数据库操作
-			select * from table where id = ?
-			update table set ** = ?;
-		} finally {
-			lock.unlock();
-		}
-	}
+public void update() {
+    Lock lock = new RedisDistributionLock("test", 10000);
+    lock.lock();
+    try{
+	//数据库操作
+	select * from table where id = ?
+	update table set ** = ?;
+    } finally {
+	lock.unlock();
+    }
+}
   以上代码存在的问题： 分布式锁会在事务提交前被释放，另外的线程会读到事务变更前的数据，与预期的逻辑不符合
-  正确的使用方法：
-  @Transactional
-	public void update() {
-		Lock lock = new RedisDistributionLock("test", 10000);
-		lock.lock();
-		try{
-			//数据库操作
-			select * from table where id = ?
-			update table set ** = ?;
-		} finally {
-			TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronizationAdapter(){
-				@Override
-				public void afterCommit() {
-					lock.unlock();
-				}
-			});
-		}
-	}
+正确的使用方法：
+@Transactional
+public void update() {
+    Lock lock = new RedisDistributionLock("test", 10000);
+    lock.lock();
+    try{
+        //数据库操作
+	select * from table where id = ?
+	update table set ** = ?;
+    } finally {
+	TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronizationAdapter(){
+	    @Override
+	    public void afterCommit() {
+		lock.unlock();
+	    }
+	});
+    }
+}
